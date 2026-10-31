@@ -1,0 +1,46 @@
+name: Build Windows Desktop
+
+on:
+  workflow_dispatch: # 允许你在 GitHub 网页上手动点击运行
+  push:
+    branches: [ "main" ]
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Setup Rust (MSVC toolchain)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          target: x86_64-pc-windows-msvc
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          cache: true
+
+      - name: Install Flutter dependencies
+        run: flutter pub get
+        working-directory: apple-watch-companion # Flutter 前端所在目录
+
+      - name: Build Windows application
+        run: python tools/build.py windows
+
+      - name: Upload Windows Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: apple-watch-connector-windows
+          path: |
+            build/windows/x64/runner/Release/
+            build/windows/x64/runner/Debug/
+          if-no-files-found: warn
