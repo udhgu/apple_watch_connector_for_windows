@@ -1,13 +1,11 @@
 name: Build Windows Desktop
 
 on:
-  workflow_dispatch: # 允许手动触发
-  push:
-    branches: [ "main" ]
+  workflow_dispatch:
 
 jobs:
   build-windows:
-    runs-on: windows-2022 # 固定版本，避开 windows-latest 的潜在镜像问题
+    runs-on: windows-2022
     timeout-minutes: 30
 
     steps:
@@ -19,57 +17,72 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Setup Rust (MSVC toolchain)
-        uses: dtolnay/rust-toolchain@stable
+      # 固定 Rust stable 版本，避免浮动更新导致 watch_core 偶发失败
+      - name: Setup Rust (pinned stable, MSVC target)
+        uses: dtolnay/rust-toolchain@1.85.0
         with:
-          toolchain: stable
           target: x86_64-pc-windows-msvc
 
-      - name: Setup Flutter
+      # 固定 Flutter 版本，避免 stable 通道更新引入不兼容
+      - name: Setup Flutter (pinned 3.24.3)
         uses: subosito/flutter-action@v2
         with:
+          flutter-version: '3.24.3'
           channel: 'stable'
           cache: true
-
-      - name: Kill zombie Flutter/Dart/Java processes
-        shell: powershell
-        run: |
-          Get-Process dart,java,flutter -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-          Start-Sleep -Seconds 2
 
       - name: Install Flutter dependencies
         working-directory: apple-watch-companion
         run: flutter pub get
 
-      - name: Build Windows application
-        timeout-minutes: 20
-        run: python tools/build.py windows
-
-      - name: Debug - list all built .exe files
+      # 关键诊断步骤：在正式构建前先单独检查 Rust 工作区
+      # 如果 watch_core 本身有编译错误，这里会直接暴露真实的 cargo 报错
+      - name: Diagnose Rust build (cargo check)
+        working-directory: apple-watch-companion
         shell: powershell
         run: |
-          Write-Host "=== All .exe files in workspace ==="
-          Get-ChildItem -Path . -Filter *.exe -Recurse -ErrorAction SilentlyContinue |
-            Select-Object FullName, Length |
-            Format-Table -AutoSize
-          Write-Host "=== Top-level directory structure ==="
-          Get-ChildItem -Path . -Directory | Select-Object Name
-          Write-Host "=== build/ directory (if exists) ==="
-          if (Test-Path build) {
-            Get-ChildItem -Path build -Recurse -Depth 3 -ErrorAction SilentlyContinue |
-              Select-Object FullName
+          Write-Host "=== cargo check output ==="
+          cargo check --verbose 2>&1 | Tee-Object -FilePath cargo-check.log
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "=== cargo check FAILED，以下是日志尾部 ==="
+            Get-Content cargo-check.log -Tail 80
+            exit 1
           }
 
+      # 使用 verbose 模式构建，确保 MSB8066 背后的真实错误不被吞掉
+      - name: Build Windows application (verbose)
+        timeout-minutes: 20
+        run: python tools/build.py windows --verbose
+
+      # 诊断：列出所有 .exe 和 .dll，确认产物真实落点
+      - name: Debug - list build outputs
+        shell: powershell
+        run: |
+          Write-Host "=== 所有 .exe 文件 ==="
+          Get-ChildItem -Path . -Filter *.exe -Recurse -ErrorAction SilentlyContinue |
+            Select-Object FullName, Length | Format-Table -AutoSize
+          Write-Host "=== 所有 .dll 文件 ==="
+          Get-ChildItem -Path . -Filter *.dll -Recurse -ErrorAction SilentlyContinue |
+            Select-Object FullName, Length | Format-Table -AutoSize
+          Write-Host "=== apple-watch-companion/build 目录结构 (深度 4) ==="
+          $buildDir = "apple-watch-companion/build"
+          if (Test-Path $buildDir) {
+            Get-ChildItem -Path $buildDir -Recurse -Depth 4 -ErrorAction SilentlyContinue |
+              Select-Object FullName
+          } else {
+            Write-Host "目录不存在: $buildDir"
+          }
+
+      # 宽松路径 + 严格兜底：确保只要有产物就一定能被捕获，没有产物则立即失败
       - name: Upload Windows Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: apple-watch-connector-windows
           path: |
+            apple-watch-companion/build/
             build/
             dist/
             output/
-            target/
-            apple-watch-companion/build/
             **/*.exe
             **/*.dll
           if-no-files-found: error
