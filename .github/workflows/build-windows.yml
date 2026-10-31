@@ -17,14 +17,11 @@ jobs:
         with:
           python-version: '3.12'
 
-      # Rust 使用 stable，配合新版 Flutter 的 CMake 工具链
-      # 若后续 watch_core 再次出现 MSB8066，可改为固定版本如 1.90.0
       - name: Setup Rust (stable, MSVC target)
         uses: dtolnay/rust-toolchain@stable
         with:
           target: x86_64-pc-windows-msvc
 
-      # Flutter 固定 3.47.8，捆绑 Dart 3.13.7，满足项目 ^3.10.3 要求
       - name: Setup Flutter (pinned 3.47.8)
         uses: subosito/flutter-action@v2
         with:
@@ -36,26 +33,29 @@ jobs:
         working-directory: apple-watch-companion
         run: flutter pub get
 
-      # 关键诊断：正式构建前先单独检查 Rust 工作区
-      # 如果 watch_core 本身有编译错误，这里会直接暴露真实的 cargo 报错
+      # 诊断步骤已修复：避免 PowerShell 5.1 将 cargo 的 stderr 误判为错误
       - name: Diagnose Rust build (cargo check)
         working-directory: apple-watch-companion
         shell: powershell
         run: |
-          Write-Host "=== cargo check output ==="
-          cargo check --verbose 2>&1 | Tee-Object -FilePath cargo-check.log
-          if ($LASTEXITCODE -ne 0) {
-            Write-Host "=== cargo check FAILED，以下是日志尾部 ==="
-            Get-Content cargo-check.log -Tail 80
-            exit 1
+          Write-Host "=== Running cargo check ==="
+          # 让 cargo 自己重定向输出到文件，绕过 PowerShell 的管道包装
+          cargo check --verbose > cargo-check.log 2>&1
+          $exitCode = $LASTEXITCODE
+          
+          Write-Host "=== cargo check exit code: $exitCode ==="
+          Write-Host "=== Last 80 lines of cargo-check.log ==="
+          Get-Content cargo-check.log -Tail 80
+          
+          if ($exitCode -ne 0) {
+            Write-Host "=== cargo check FAILED ==="
+            exit $exitCode
           }
 
-      # 使用 verbose 模式构建，确保 MSB8066 背后的真实错误不被吞掉
       - name: Build Windows application (verbose)
         timeout-minutes: 20
         run: python tools/build.py windows --verbose
 
-      # 诊断：列出所有 .exe 和 .dll，确认产物真实落点
       - name: Debug - list build outputs
         shell: powershell
         run: |
@@ -74,7 +74,6 @@ jobs:
             Write-Host "目录不存在: $buildDir"
           }
 
-      # 宽松路径 + 严格兜底：有产物必捕获，无产物立即失败
       - name: Upload Windows Artifacts
         uses: actions/upload-artifact@v4
         with:
