@@ -1,13 +1,15 @@
 name: Build Windows Desktop
 
 on:
-  workflow_dispatch: # 允许你在 GitHub 网页上手动点击运行
+  workflow_dispatch: # 允许手动触发
   push:
     branches: [ "main" ]
 
 jobs:
   build-windows:
-    runs-on: windows-latest
+    runs-on: windows-2022 # 固定版本，避开 windows-latest 的潜在镜像问题
+    timeout-minutes: 30
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -29,18 +31,46 @@ jobs:
           channel: 'stable'
           cache: true
 
+      - name: Kill zombie Flutter/Dart/Java processes
+        shell: powershell
+        run: |
+          Get-Process dart,java,flutter -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 2
+
       - name: Install Flutter dependencies
+        working-directory: apple-watch-companion
         run: flutter pub get
-        working-directory: apple-watch-companion # Flutter 前端所在目录
 
       - name: Build Windows application
+        timeout-minutes: 20
         run: python tools/build.py windows
+
+      - name: Debug - list all built .exe files
+        shell: powershell
+        run: |
+          Write-Host "=== All .exe files in workspace ==="
+          Get-ChildItem -Path . -Filter *.exe -Recurse -ErrorAction SilentlyContinue |
+            Select-Object FullName, Length |
+            Format-Table -AutoSize
+          Write-Host "=== Top-level directory structure ==="
+          Get-ChildItem -Path . -Directory | Select-Object Name
+          Write-Host "=== build/ directory (if exists) ==="
+          if (Test-Path build) {
+            Get-ChildItem -Path build -Recurse -Depth 3 -ErrorAction SilentlyContinue |
+              Select-Object FullName
+          }
 
       - name: Upload Windows Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: apple-watch-connector-windows
           path: |
-            build/windows/x64/runner/Release/
-            build/windows/x64/runner/Debug/
-          if-no-files-found: warn
+            build/
+            dist/
+            output/
+            target/
+            apple-watch-companion/build/
+            **/*.exe
+            **/*.dll
+          if-no-files-found: error
+          retention-days: 30
