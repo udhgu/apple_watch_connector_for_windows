@@ -5,13 +5,21 @@ on:
 
 jobs:
   build-windows:
-    runs-on: windows-2022
+    runs-on: windows-latest
     timeout-minutes: 30
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
+      # 按照你的要求：不限制 Flutter 版本，使用 stable 通道自动获取最新稳定版
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      # 项目构建脚本依赖 Python 与 Rust（Windows 桌面端使用 Rust 管理蓝牙与 Java 引擎）
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
@@ -22,59 +30,18 @@ jobs:
         with:
           target: x86_64-pc-windows-msvc
 
-      - name: Setup Flutter (pinned 3.47.8)
-        uses: subosito/flutter-action@v2
-        with:
-          flutter-version: '3.47.8'
-          channel: 'stable'
-          cache: true
-
+      # 项目前端位于 apple-watch-companion 目录，安装 Flutter 依赖
       - name: Install Flutter dependencies
         working-directory: apple-watch-companion
         run: flutter pub get
 
-      # 诊断步骤已修复：避免 PowerShell 5.1 将 cargo 的 stderr 误判为错误
-      - name: Diagnose Rust build (cargo check)
-        working-directory: apple-watch-companion
-        shell: powershell
-        run: |
-          Write-Host "=== Running cargo check ==="
-          # 让 cargo 自己重定向输出到文件，绕过 PowerShell 的管道包装
-          cargo check --verbose > cargo-check.log 2>&1
-          $exitCode = $LASTEXITCODE
-          
-          Write-Host "=== cargo check exit code: $exitCode ==="
-          Write-Host "=== Last 80 lines of cargo-check.log ==="
-          Get-Content cargo-check.log -Tail 80
-          
-          if ($exitCode -ne 0) {
-            Write-Host "=== cargo check FAILED ==="
-            exit $exitCode
-          }
-
-      - name: Build Windows application (verbose)
+      # 这是仓库文档指定的 Windows 构建入口，内部会编译 Rust 并打包 Flutter 桌面应用
+      - name: Build Windows application
         timeout-minutes: 20
-        run: python tools/build.py windows --verbose
+        run: python tools/build.py windows
 
-      - name: Debug - list build outputs
-        shell: powershell
-        run: |
-          Write-Host "=== 所有 .exe 文件 ==="
-          Get-ChildItem -Path . -Filter *.exe -Recurse -ErrorAction SilentlyContinue |
-            Select-Object FullName, Length | Format-Table -AutoSize
-          Write-Host "=== 所有 .dll 文件 ==="
-          Get-ChildItem -Path . -Filter *.dll -Recurse -ErrorAction SilentlyContinue |
-            Select-Object FullName, Length | Format-Table -AutoSize
-          Write-Host "=== apple-watch-companion/build 目录结构 (深度 4) ==="
-          $buildDir = "apple-watch-companion/build"
-          if (Test-Path $buildDir) {
-            Get-ChildItem -Path $buildDir -Recurse -Depth 4 -ErrorAction SilentlyContinue |
-              Select-Object FullName
-          } else {
-            Write-Host "目录不存在: $buildDir"
-          }
-
-      - name: Upload Windows Artifacts
+      # 核心：检查是否有文件生成。若上传路径下没有任何文件，步骤立即失败（Job 变红）
+      - name: Verify and Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: apple-watch-connector-windows
@@ -83,6 +50,7 @@ jobs:
             build/
             dist/
             output/
+            windows-watch-host/target/
             **/*.exe
             **/*.dll
           if-no-files-found: error
